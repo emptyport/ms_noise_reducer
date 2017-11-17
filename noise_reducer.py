@@ -3,6 +3,7 @@ import sys
 import numpy as np
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
+from multiprocessing import Pool as ThreadPool
 
 def func(x, l):
     return l * np.exp(-l * x)
@@ -34,60 +35,60 @@ def filter_noise(spectrum):
 '''
 
 def filter_noise(spectrum):
+    mz = spectrum['m/z array']
     intensities = spectrum['intensity array']
-    n_steps = max(intensities)/4
-    step_size = max(intensities)/n_steps
-    print 'step size',step_size
-    bins = np.arange(0,max(intensities)+step_size,step_size)
-    inds = np.digitize(intensities, bins)
-    #print bins
-    unique, counts = np.unique(inds, return_counts=True)
-    x = []
-    y = []
-    n = len(intensities)
-    for i in range(1, len(bins)):
-        x.append(int(i))
-        y.append(float((inds == i).sum())/n)
-    #print y[1:]
-    #plt.plot(x[1:50], y[1:50], 'b-', label='data')
-    sub_n = n/4
-    l = (sub_n - 2)/np.sum(y[1:sub_n])
-    for thing in x:
-        calc = func(thing, l)
-        if calc * n < 1:
-            cutoff = bins[thing]
-            print l,cutoff
-            return cutoff
-    return 0
+    sorted_intensities = sorted(intensities, reverse=True)
+    running_variance = []
+    for i in range(0, len(sorted_intensities)):
+        running_variance.append(np.var(sorted_intensities[i:len(sorted_intensities)]))
+    
+    relative_variance_change = []
+    for i in range(1, len(running_variance)):
+        relative_variance_change.append(-(running_variance[i] - running_variance[i-1])/running_variance[i-1]*100)
+    
+    cutoff_index = -1
+    for i in range(0,len(relative_variance_change)):
+        change = relative_variance_change[i]
+        if change < 1:
+            cutoff_index = i+1
+            break
+    if cutoff_index > -1:
+        cutoff = sorted_intensities[cutoff_index]
+    else:
+        cutoff = 2*np.median(intensities)
 
-filename = sys.argv[1]
-print 'Processing',filename
+    spectrum['params']['noise_level'] = cutoff
 
-outfile_name = './' + filename.split('.')[0] + '_filtered.' + filename.split('.')[1]
-outfile = open(outfile_name, 'w')
-
-processed_spectra = []
-spectra = read_mgf(filename)
-for spectrum in spectra:
-    print len(processed_spectra)
     new_entry = {}
-    mz = np.array(spectrum['m/z array'])
-    intensity = np.array(spectrum['intensity array'])
-    #is_noise = filter_noise(spectrum)
-    #new_mz = mz[np.invert(is_noise)]
-    #new_intensity = intensity[np.invert(is_noise)]
-    cutoff = filter_noise(spectrum)
     new_mz = []
     new_intensity = []
     for i in range(0, len(mz)):
-        if intensity[i] > cutoff:
+        if intensities[i] > cutoff:
             new_mz.append(mz[i])
-            new_intensity.append(intensity[i])
+            new_intensity.append(intensities[i])
     new_entry['m/z array'] = new_mz
     new_entry['intensity array'] = new_intensity
     new_entry['params'] = spectrum['params']
     new_entry['charge array'] = spectrum['charge array']
-    processed_spectra.append(new_entry)
 
-mgf.write(processed_spectra, output=outfile)
-outfile.close()
+    return new_entry
+
+
+if __name__ == '__main__':
+    filename = sys.argv[1]
+    print('Processing',filename)
+
+    outfile_name = '.\\' + filename.split('.')[1] + '_filtered.' + filename.split('.')[2]
+
+    outfile = open(outfile_name, 'w')
+
+    spectra = read_mgf(filename)
+    pool = ThreadPool()
+
+    processed_spectra = pool.map(filter_noise, spectra)
+    pool.close()
+    pool.join()    
+
+    print('Writing to file...')
+    mgf.write(processed_spectra, output=outfile)
+    outfile.close()
